@@ -1,0 +1,89 @@
+name: Build APK
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Game logic sanity check (bot plays full runs)
+        run: node tools/sim.js 3
+
+      - name: Dev build settings (non-main branches)
+        if: github.ref != 'refs/heads/main'
+        run: |
+          sed -i 's|"appId": *"[^"]*"|"appId": "com.devabu.tailsurvivors.dev"|; s|"appName": *"[^"]*"|"appName": "Tail Survivors Dev"|' capacitor.config.json
+          cat capacitor.config.json
+
+      - name: Generate Android project
+        run: npx cap add android
+
+      - name: Portrait orientation + vibration permission
+        run: |
+          sed -i 's|\(android:name="[^"]*MainActivity"\)|\1 android:screenOrientation="portrait"|' android/app/src/main/AndroidManifest.xml
+          sed -i 's|</manifest>|    <uses-permission android:name="android.permission.VIBRATE" />\n</manifest>|' android/app/src/main/AndroidManifest.xml
+          grep -n 'VIBRATE\|screenOrientation' android/app/src/main/AndroidManifest.xml
+
+      - name: Sync web assets
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon -I ../android-signing.gradle
+
+      - name: Prepare APK and verify signing key
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk tail-survivors.apk
+          want=$(keytool -list -keystore keystore/debug.keystore -storepass android | grep -i 'fingerprint' | awk '{print $NF}')
+          got=$(keytool -printcert -jarfile tail-survivors.apk | grep 'SHA256:' | head -1 | awk '{print $NF}')
+          echo "keystore: $want"; echo "apk:      $got"
+          test "$want" = "$got"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tail-survivors-apk
+          path: tail-survivors.apk
+
+      - name: Publish Dev Release (non-main branches)
+        if: github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp tail-survivors.apk tail-survivors-dev.apk
+          gh release create "dev-${{ github.run_number }}" tail-survivors-dev.apk \
+            --target "${{ github.sha }}" --prerelease \
+            --title "Tail Survivors DEV #${{ github.run_number }} (${{ github.ref_name }})" \
+            --notes "Experimental build (branch ${{ github.ref_name }}). Installs next to the main app."
+
+      - name: Publish Release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" tail-survivors.apk \
+            --title "Tail Survivors #${{ github.run_number }}" \
+            --notes "Download tail-survivors.apk and install it on an Android phone." \
+            --latest

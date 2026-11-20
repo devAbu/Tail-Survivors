@@ -1,0 +1,9 @@
+{
+  "appId": "com.devabu.tailsurvivors",
+  "appName": "Tail Survivors",
+  "webDir": "www",
+  "backgroundColor": "#070d12",
+  "android": {
+    "allowMixedContent": false
+  }
+}
